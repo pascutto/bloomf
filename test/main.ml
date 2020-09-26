@@ -61,9 +61,8 @@ let test_size () =
     sizes
 
 let test_bytes_roundtrip () =
-  match Bloomf.of_bytes (Bloomf.to_bytes bf) with
-  | Ok b -> if bf = b then () else Alcotest.fail "Decoded objects unequal"
-  | Error msg -> Alcotest.failf "of_string failed to decode object: %s\n" msg
+  let ret = Bloomf.of_bytes (Bloomf.to_bytes bf) in
+  if bf = ret then () else Alcotest.fail "Decoded objects unequal"
 
 let test_set =
   [

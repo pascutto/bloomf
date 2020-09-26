@@ -37,13 +37,11 @@ val size_estimate : 'a t -> int
     benchmarks). *)
 
 val to_bytes : 'a t -> bytes
-(** [to_bytes t] converts a [t] to [bytes]. The same concerns about
-    serialization apply here as to [to_string] *)
+(** [to_bytes t] serializes [t] into bytes. *)
 
-val of_bytes : bytes -> ('a t, string) result
-(** [of_bytes t] converts a [bytes] of the format serialized by [to_bytes] to
-    [t]. All of the same concerns regarding deserialization and program state
-    apply to this function as they do to [to_string] *)
+val of_bytes : bytes -> 'a t
+(** [of_bytes b] is the Bloom filter represented by the bytes [b] as encoded by
+    [to_bytes]. *)
 
 (** {1 Functorial interface} *)
 

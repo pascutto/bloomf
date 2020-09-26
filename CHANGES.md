@@ -1,4 +1,4 @@
-## Unreleased 2020-08-26
+## Unreleased
 
 - Add serializers and deserializers: `to_string`, `to_bytes`, `of_string`, and `of_bytes`
 

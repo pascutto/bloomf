@@ -78,137 +78,54 @@ let size_estimate t =
   let xf = float_of_int (Bitv.pop t.b) in
   int_of_float (-.mf /. kf *. log (1. -. (xf /. mf)))
 
-let to_buf t =
-  let rs = String.make 1 (Char.chr 30) in
-  let us = String.make 1 (Char.chr 31) in
+let to_bytes t =
+  let encoded_b = Bitv.to_bytes t.b in
+  let encoded_b_len = Bytes.length encoded_b in
   let buf =
-    Buffer.create (5 + (4 * List.length t.p_len) + (2 * Bitv.length t.b))
+    8 (* m *) + 8 (* k *) + (t.k * 16) (* p_len *) + encoded_b_len
+    |> Bytes.create
   in
-  let write_to_buf buf content =
-    Buffer.add_string buf (string_of_int (Bytes.length content));
-    Buffer.add_string buf "|";
-    Buffer.add_bytes buf content
+  let blit_int i x =
+    for j = 0 to 7 do
+      Char.chr ((x lsr (8 * j)) land 0xFF) |> Bytes.set buf (i + j)
+    done
   in
-  let p_len_to_string p_len =
-    let buf = Buffer.create (4 * List.length p_len) in
-    ( match p_len with
-    | [] -> Buffer.add_string buf (" " ^ rs)
-    | p_len ->
-        p_len
-        |> List.iter (fun p ->
-               let fst, snd = p in
-               Buffer.add_string buf
-                 (string_of_int fst ^ us ^ string_of_int snd ^ rs)) );
-    buf |> Buffer.contents
-  in
-  let contents =
-    [
-      Bytes.of_string (string_of_int t.k);
-      Bytes.of_string (p_len_to_string t.p_len);
-      Bytes.of_string (string_of_int t.m);
-      Bitv.to_bytes t.b;
-    ]
-  in
-  contents |> List.iter (write_to_buf buf);
+  blit_int 0 t.m;
+  blit_int 8 t.k;
+  List.iteri
+    (fun i (off, len) ->
+      blit_int (16 + (i * 16)) off;
+      blit_int (16 + (i * 16) + 8) len)
+    t.p_len;
+  Bytes.blit encoded_b 0 buf (16 + (t.k * 16)) encoded_b_len;
   buf
 
-let to_bytes t = to_buf t |> Buffer.to_bytes
-
-let unwrap_input_list error_message l =
-  let rec aux l acc =
-    match l with
-    | [] -> Ok (List.rev acc)
-    | Some x :: tl -> aux tl (x :: acc)
-    | None :: _ -> Error error_message
+let read_int b off =
+  let rec build x i =
+    if i < 0 then x
+    else build ((x lsl 8) lor Char.code (Bytes.get b (i + off))) (pred i)
   in
-  aux l []
+  build 0 7
 
-let int_of_bytes_opt inpt =
-  match int_of_string (Bytes.unsafe_to_string inpt) with
-  | inpt_int -> Some inpt_int
-  | exception Failure _ -> None
-
-let parse_p_len p_len_str =
-  let rs = Char.chr 30 in
-  let us = Char.chr 31 in
-  let parse_pair pair =
-    match pair with
-    | [ x; y ] -> (
-        let x_opt = int_of_string_opt x in
-        let y_opt = int_of_string_opt y in
-        match (x_opt, y_opt) with
-        | Some x_opt, Some y_opt -> Some (x_opt, y_opt)
-        | _ -> None )
-    | _ -> None
+let of_bytes buf =
+  let error () = invalid_arg "invalid bytes sequence" in
+  if Bytes.length buf < 16 then error ();
+  let m = read_int buf 0 in
+  let k = read_int buf 8 in
+  if Bytes.length buf < 16 + (k * 16) then error ();
+  let p_len =
+    List.init k (fun i ->
+        let off = read_int buf (16 + (i * 16)) in
+        let len = read_int buf (16 + (i * 16) + 8) in
+        (off, len))
   in
-  let p_len_lst =
-    p_len_str |> String.split_on_char rs |> List.filter (fun p -> p <> "")
-  in
-  match p_len_lst with
-  | [ " " ] -> Ok []
-  | p_len_lst ->
-      p_len_lst
-      |> List.map (fun p -> p |> String.split_on_char us |> parse_pair)
-      |> unwrap_input_list "Invalid p_len pair(s)"
-
-let nth_opt buf n =
-  match Buffer.nth buf n with
-  | c -> ( Some c [@explicit_arity] )
-  | exception Invalid_argument _ -> None
-
-let read_n_bytes n buf p =
-  let rec loop p n acc =
-    match n with
-    | n when n > 0 -> (
-        match nth_opt buf p with
-        | ((Some chr)[@explicit_arity]) ->
-            loop (p + 1) (n - 1)
-              (Bytes.concat Bytes.empty [ acc; Bytes.make 1 chr ])
-        | None -> acc )
-    | _ -> acc
-  in
-  loop (p + 1) n Bytes.empty
-
-let read_until from til buf =
-  let rec loop pos acc =
-    match Buffer.nth buf pos with
-    | cur when cur = til -> acc
-    | cur -> loop (pos + 1) (Bytes.cat acc (Bytes.make 1 cur))
-    | exception Invalid_argument _ -> acc
-  in
-  loop from Bytes.empty
-
-let of_buffer buf =
-  let separator = Char.chr 124 in
-  let rec parse_loop buf contents offset =
-    if offset >= Buffer.length buf then List.rev contents
-    else
-      let n_b = read_until offset separator buf in
-      let n_len = Bytes.length n_b in
-      let n = n_b |> Bytes.unsafe_to_string |> int_of_string in
-      let block_contents = read_n_bytes n buf (offset + n_len) in
-      let new_offset = offset + n_len + Bytes.length block_contents + 1 in
-      parse_loop buf (block_contents :: contents) new_offset
-  in
-  match parse_loop buf [] 0 with
-  | [ k_b; p_len_b; m_b; bv_b ] -> (
-      let b = Bitv.of_bytes bv_b in
-      match parse_p_len (Bytes.to_string p_len_b) with
-      | Ok p_len -> (
-          let m = int_of_bytes_opt m_b in
-          let k = int_of_bytes_opt k_b in
-          match (m, k) with
-          | Some m, Some k -> Ok { m; k; p_len; b }
-          | None, Some _ -> Error "Invalid int for 'm'"
-          | Some _, None -> Error "Invalid int for 'k'"
-          | None, None -> Error "Invalid int for 'm' and 'k'" )
-      | Error msg -> Error msg )
-  | _ -> Error "Invalid number of fields in input"
-
-let of_bytes b =
-  let buf = Buffer.create (Bytes.length b) in
-  let () = Buffer.add_bytes buf b in
-  of_buffer buf
+  try
+    let b =
+      Bytes.sub buf (16 + (k * 16)) (Bytes.length buf - (16 + (k * 16)))
+      |> Bitv.of_bytes
+    in
+    { m; k; p_len; b }
+  with _ -> error ()
 
 module type Hashable = sig
   type t
